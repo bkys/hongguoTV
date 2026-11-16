@@ -1,0 +1,113 @@
+name: Fork sync upstream and release
+
+# 定时把上游 N3urda/hongguoTV 合并进本 fork；上游版本号变化时自动签名构建并发布。
+# 也可在 Actions 页面手动触发。
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-sync-release
+  cancel-in-progress: false
+
+jobs:
+  sync-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FORK_REPO: ${{ github.repository }}
+      UPSTREAM_REPO: N3urda/hongguoTV
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream main
+        run: bash scripts/fork_sync.sh
+
+      - name: Push merged main
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]; then
+            git push origin HEAD:main
+          else
+            echo "main 已是最新，无需推送"
+          fi
+
+      - name: Resolve release tag
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/.*versionName = .*?: "\([^"]*\)".*/\1/p' kotlin-tv/app/build.gradle.kts | head -n1)
+          tag="kotlin-v${version}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release list --repo "$FORK_REPO" --limit 200 --json tagName,isDraft \
+               --jq '.[] | select(.isDraft == false) | .tagName' | grep -Fxq "$tag"; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "${tag} 已发布，本次只同步源码"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "准备发布 ${tag}"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.version.outputs.released == 'false'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        if: steps.version.outputs.released == 'false'
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        if: steps.version.outputs.released == 'false'
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Decode release keystore
+        if: steps.version.outputs.released == 'false'
+        env:
+          HONGGUOTV_KEYSTORE_B64: ${{ secrets.HONGGUOTV_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HONGGUOTV_KEYSTORE_B64:-}" ]; then
+            echo "::error::缺少仓库 Secret HONGGUOTV_KEYSTORE_B64"
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$HONGGUOTV_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          test -s "$RUNNER_TEMP/release.jks"
+          echo "HONGGUOTV_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build signed release APKs
+        if: steps.version.outputs.released == 'false'
+        env:
+          HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
+          HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
+          HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
+        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:assembleRelease --console=plain
+
+      - name: Prepare release assets
+        if: steps.version.outputs.released == 'false'
+        env:
+          HONGGUOTV_CERT_SHA256: ${{ secrets.HONGGUOTV_CERT_SHA256 }}
+        run: python3 scripts/fork_release.py prepare "${{ steps.version.outputs.tag }}"
+
+      - name: Publish release
+        if: steps.version.outputs.released == 'false'
+        run: python3 scripts/fork_release.py publish "${{ steps.version.outputs.tag }}"
+
+      - name: Remove temporary signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
