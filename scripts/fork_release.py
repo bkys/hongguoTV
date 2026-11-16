@@ -206,9 +206,11 @@ def publish(tag):
         if sizes.get(path.name) != path.stat().st_size:
             fail(f"上传校验失败：{path.name}")
     run("gh", "release", "edit", tag, "--repo", repo, "--draft=false", "--latest=true", "--notes-file", notes)
-    result = json.loads(run("gh", "release", "view", tag, "--repo", repo, "--json", "isDraft,isLatest"))
-    if result["isDraft"] or not result.get("isLatest"):
-        fail("Release 未正确发布为 latest")
+    if json.loads(run("gh", "release", "view", tag, "--repo", repo, "--json", "isDraft"))["isDraft"]:
+        fail("Release 仍为草稿")
+    latest = json.loads(run("gh", "release", "list", "--repo", repo, "--limit", "1", "--json", "tagName"))
+    if latest[0]["tagName"] != tag:
+        fail("Release 未成为 latest")
     print(f"已发布 {tag}")
 
 
