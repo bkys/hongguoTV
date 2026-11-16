@@ -1,11 +1,16 @@
 name: Fork sync upstream and release
 
 # 定时把上游 N3urda/hongguoTV 合并进本 fork；上游版本号变化时自动签名构建并发布。
-# 也可在 Actions 页面手动触发。
+# 也可在 Actions 页面手动触发；勾选 force_release 可把当前 main 立刻发一版。
 on:
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
+    inputs:
+      force_release:
+        description: 即使上游未升版本，也把当前 main 发布一版（<版本>.<序号>）
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -43,40 +48,27 @@ jobs:
             echo "main 已是最新，无需推送"
           fi
 
-      - name: Resolve release tag
-        id: version
-        run: |
-          set -euo pipefail
-          version=$(sed -n 's/.*versionName = .*?: "\([^"]*\)".*/\1/p' kotlin-tv/app/build.gradle.kts | head -n1)
-          tag="kotlin-v${version}"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          if gh release list --repo "$FORK_REPO" --limit 200 --json tagName,isDraft \
-               --jq '.[] | select(.isDraft == false) | .tagName' | grep -Fxq "$tag"; then
-            echo "released=true" >> "$GITHUB_OUTPUT"
-            echo "${tag} 已发布，本次只同步源码"
-          else
-            echo "released=false" >> "$GITHUB_OUTPUT"
-            echo "准备发布 ${tag}"
-          fi
+      - name: Plan version
+        id: plan
+        run: python3 scripts/fork_release.py plan --force "${{ inputs.force_release || 'false' }}"
 
       - uses: actions/setup-java@v4
-        if: steps.version.outputs.released == 'false'
+        if: steps.plan.outputs.release == 'true'
         with:
           distribution: temurin
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
-        if: steps.version.outputs.released == 'false'
+        if: steps.plan.outputs.release == 'true'
         with:
           packages: platform-tools
 
       - name: Install Android SDK packages
-        if: steps.version.outputs.released == 'false'
+        if: steps.plan.outputs.release == 'true'
         run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Decode release keystore
-        if: steps.version.outputs.released == 'false'
+        if: steps.plan.outputs.release == 'true'
         env:
           HONGGUOTV_KEYSTORE_B64: ${{ secrets.HONGGUOTV_KEYSTORE_B64 }}
         run: |
@@ -91,22 +83,28 @@ jobs:
           echo "HONGGUOTV_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
       - name: Build signed release APKs
-        if: steps.version.outputs.released == 'false'
+        if: steps.plan.outputs.release == 'true'
         env:
           HONGGUOTV_STORE_PASSWORD: ${{ secrets.HONGGUOTV_STORE_PASSWORD }}
           HONGGUOTV_KEY_ALIAS: ${{ secrets.HONGGUOTV_KEY_ALIAS }}
           HONGGUOTV_KEY_PASSWORD: ${{ secrets.HONGGUOTV_KEY_PASSWORD }}
+          HONGGUOTV_VERSION_NAME: ${{ steps.plan.outputs.version }}
+          HONGGUOTV_VERSION_CODE: ${{ steps.plan.outputs.code }}
         run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:assembleRelease --console=plain
 
       - name: Prepare release assets
-        if: steps.version.outputs.released == 'false'
+        if: steps.plan.outputs.release == 'true'
         env:
           HONGGUOTV_CERT_SHA256: ${{ secrets.HONGGUOTV_CERT_SHA256 }}
-        run: python3 scripts/fork_release.py prepare "${{ steps.version.outputs.tag }}"
+        run: >-
+          python3 scripts/fork_release.py prepare "${{ steps.plan.outputs.tag }}"
+          --version "${{ steps.plan.outputs.version }}" --code "${{ steps.plan.outputs.code }}"
 
       - name: Publish release
-        if: steps.version.outputs.released == 'false'
-        run: python3 scripts/fork_release.py publish "${{ steps.version.outputs.tag }}"
+        if: steps.plan.outputs.release == 'true'
+        run: >-
+          python3 scripts/fork_release.py publish "${{ steps.plan.outputs.tag }}"
+          --version "${{ steps.plan.outputs.version }}" --code "${{ steps.plan.outputs.code }}"
 
       - name: Remove temporary signing material
         if: always()

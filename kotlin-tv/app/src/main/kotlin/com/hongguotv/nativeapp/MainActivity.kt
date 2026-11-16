@@ -2410,8 +2410,8 @@ class MainActivity : Activity() {
                 }
                 4 -> {
                     lateinit var about: TextView
-                    about = setting("关于hongguoTV") {
-                        tvTools.info("关于hongguoTV", "hongguoTV · 非官方客户端\n基于 N3urda/hongguoTV\n功能同步：tsukiyo-zero/hongguoTV\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/N3urda/hongguoTV\n\n本应用与红果官方无隶属关系。", about)
+                    about = setting("关于bkysHGTV") {
+                        tvTools.info("关于bkysHGTV", "bkysHGTV · 非官方客户端\n基于 N3urda/hongguoTV\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/bkys/hongguoTV\n\n本应用与红果官方无隶属关系。\n本程序只供自己研究用，无传播或用于商业用途。", about)
                     }
                     lateinit var license: TextView
                     license = setting("开源许可") {
@@ -4879,7 +4879,7 @@ class MainActivity : Activity() {
         }
         // Navigation is the outermost level on every page, including the scan action.
         if (screen == "catalog" && catalogShell?.hasNavigationFocus == true) {
-            tvTools.confirm("退出hongguoTV", "确定退出？", currentFocus) { finish() }
+            tvTools.confirm("退出bkysHGTV", "确定退出？", currentFocus) { finish() }
             return
         }
         if (screen == "catalog" && tab == 6) {

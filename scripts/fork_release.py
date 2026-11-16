@@ -31,7 +31,7 @@ VARIANTS = (
 NOTES = (
     "同步上游 N3urda/hongguoTV 源码，由 bkys/hongguoTV 使用自有发布证书自动构建。"
     "提供 Android 6.0+（API 23）通用包、ARM32 与 ARM64 安装包；不含 Android 5 兼容包。"
-    "应用内更新已指向本仓库 Release，可直接检查并覆盖安装。"
+    "应用内更新已指向本仓库 Release，可直接检查并覆盖安装。仅限个人研究使用，请勿传播或用于商业用途。"
 )
 
 
@@ -115,10 +115,10 @@ def check_apk(path, version, code, abi):
 
 
 def version_key(tag):
-    match = re.fullmatch(r"kotlin-v(\d+)\.(\d+)\.(\d+)", tag)
+    match = re.fullmatch(r"kotlin-v(\d+(?:\.\d+)*)", tag)
     if not match:
         fail(f"无法识别的版本标签：{tag}")
-    return tuple(int(part) for part in match.groups())
+    return tuple(int(part) for part in match.group(1).split("."))
 
 
 def releases(repo):
@@ -133,10 +133,9 @@ def repo_name():
     return repo
 
 
-def prepare(tag):
-    version, code = source_version()
+def prepare(tag, version, code):
     if tag != f"kotlin-v{version}":
-        fail(f"标签 {tag} 与源码版本 {version} 不一致")
+        fail(f"标签 {tag} 与版本 {version} 不一致")
     commit = run("git", "rev-parse", "HEAD")
     OUT.mkdir(exist_ok=True)
     for stale in OUT.iterdir():
@@ -165,7 +164,7 @@ def prepare(tag):
     (OUT / "update.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     (OUT / "SHA256SUMS").write_text("".join(f"{sha256(p)}  {p.name}\n" for p in (*assets, OUT / "update.json")))
     (OUT / "release-notes.md").write_text(
-        f"红果 TV {version}（versionCode {code}），Android 6.0+（API 23）。\n\n{NOTES}\n\n"
+        f"bkysHGTV {version}（versionCode {code}），Android 6.0+（API 23）。\n\n{NOTES}\n\n"
         f"源码提交：{commit}。\n\n"
         "安装包：`hongguotv-kotlin-%s-android6.apk`（通用）、`-android6-arm32-v7a.apk`（ARM32）、"
         "`-android6-arm64-v8a.apk`（ARM64）。三者同一证书签名，可与后续版本覆盖安装；"
@@ -174,10 +173,9 @@ def prepare(tag):
     print(f"已生成 {len(assets)} 个安装包与 update.json，版本 {version} / {code}")
 
 
-def publish(tag):
-    version, _ = source_version()
+def publish(tag, version):
     if tag != f"kotlin-v{version}":
-        fail(f"标签 {tag} 与源码版本 {version} 不一致")
+        fail(f"标签 {tag} 与版本 {version} 不一致")
     repo = repo_name()
     existing_releases = releases(repo)
     current = next((item for item in existing_releases if item["tagName"] == tag), None)
@@ -197,7 +195,7 @@ def publish(tag):
         print(f"复用草稿 Release {tag}")
     else:
         run("gh", "release", "create", tag, "--repo", repo, "--target",
-            run("git", "rev-parse", "HEAD"), "--title", f"红果 TV {version}",
+            run("git", "rev-parse", "HEAD"), "--title", f"bkysHGTV {version}",
             "--notes-file", notes, "--draft")
     run("gh", "release", "upload", tag, "--repo", repo, *map(str, files), "--clobber")
     uploaded = json.loads(run("gh", "release", "view", tag, "--repo", repo, "--json", "assets,isDraft"))["assets"]
@@ -214,15 +212,61 @@ def publish(tag):
     print(f"已发布 {tag}")
 
 
+def emit(values):
+    lines = "".join(f"{key}={value}\n" for key, value in values.items())
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a", encoding="utf-8") as out:
+            out.write(lines)
+    else:
+        print(lines, end="")
+
+
+def plan(force):
+    """决定本次是否发布，并给 Gradle 提供 versionName / versionCode。
+
+    默认跟随上游版本：只在上游 versionName 尚未发布过时发布。
+    force 用于把当前 main 立即发一版：版本号记作 <上游版本>.<序号>。
+    versionCode 统一用 上游 versionCode * 100 (+序号)，保证跨版本单调递增。
+    """
+    base_version, base_code = source_version()
+    repo = repo_name()
+    tags = {item["tagName"] for item in releases(repo) if not item["isDraft"]}
+    base_tag = f"kotlin-v{base_version}"
+    version, code, release = base_version, base_code * 100, True
+    if base_tag in tags:
+        if force:
+            index = 1
+            while f"kotlin-v{base_version}.{index}" in tags:
+                index += 1
+            version = f"{base_version}.{index}"
+            code = base_code * 100 + index
+        else:
+            release = False
+    tag = f"kotlin-v{version}"
+    if tag in tags:
+        release = False
+    emit(dict(release=str(release).lower(), version=version, code=code, tag=tag))
+    print(f"计划：{'发布 ' + tag if release else '跳过发布'}（versionName {version} / versionCode {code}）")
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["prepare", "publish"])
-    parser.add_argument("tag")
+    parser.add_argument("action", choices=["plan", "prepare", "publish"])
+    parser.add_argument("tag", nargs="?")
+    parser.add_argument("--version")
+    parser.add_argument("--code", type=int)
+    parser.add_argument("--force", default="false")
     args = parser.parse_args()
+    if args.action == "plan":
+        plan(args.force.strip().lower() == "true")
+        return
+    if not args.tag or not args.version or args.code is None:
+        fail("prepare/publish 需要 <tag> --version 与 --code")
     if args.action == "prepare":
-        prepare(args.tag)
+        prepare(args.tag, args.version, args.code)
     else:
-        publish(args.tag)
+        publish(args.tag, args.version)
 
 
 if __name__ == "__main__":

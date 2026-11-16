@@ -34,9 +34,9 @@ internal class CatalogShell(context: Context, private val phone: (View) -> Unit 
         rail.setPadding(dp(12), dp(if (compact) 12 else 20), dp(12), dp(if (compact) 12 else 16))
         rail.setBackgroundColor(TvStyle.background)
         rail.addView(ImageView(context).apply {
-            setImageResource(R.drawable.brand_mark)
+            setImageResource(R.drawable.bz)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            contentDescription = "hongguoTV"
+            contentDescription = "bkysHGTV"
             isFocusable = false
             (drawable as? android.graphics.drawable.BitmapDrawable)?.isFilterBitmap = false
         }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 12 else 24) })
