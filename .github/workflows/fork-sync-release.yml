@@ -4,7 +4,8 @@ name: Fork sync upstream and release
 # 也可在 Actions 页面手动触发；勾选 force_release 可把当前 main 立刻发一版。
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    # GitHub 的定时触发是尽力而为，可能延迟或跳过；每小时一次以减少漏检上游更新。
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       force_release:
