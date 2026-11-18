@@ -30,6 +30,7 @@ import com.hongguotv.core.*
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.json.JSONObject
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -535,6 +536,17 @@ class MainActivity : Activity() {
         pendingSeek = null
     }
 
+    // 触屏设备的手势状态：中央单击开菜单，左右拖动按拖动距离换算快进快退。
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var touchDownAt = 0L
+    private var touchDragging = false
+    private var touchSeekBase = 0L
+    private var touchSeekTarget = 0L
+
+    // 最近一次触摸时间：手机用户按返回时直接给退出菜单，遥控器用户保持原有的焦点回退层级。
+    private var lastTouchAt = 0L
+
     private fun dp(value: Number) = (value.toFloat() * resources.displayMetrics.density).toInt()
 
     private fun widthDp() = resources.displayMetrics.widthPixels / resources.displayMetrics.density
@@ -618,6 +630,7 @@ class MainActivity : Activity() {
         artwork = ArtworkLoader(this)
         tvTools = TvTools(this)
         root = FrameLayout(this).apply { background = TvVisual.backdrop(this@MainActivity) }
+        root.setOnTouchListener { _, event -> handlePlayerTouch(event) }
         setContentView(root)
         CodecCapabilities.init(this)
         CodecCapabilities.logDeviceCapabilities()
@@ -4533,6 +4546,79 @@ class MainActivity : Activity() {
         showHud()
     }
 
+    /** 播放页触摸：中央单击开/关菜单，左右拖动按距离快进快退，左右单击 ±10 秒。 */
+    private fun handlePlayerTouch(event: MotionEvent): Boolean {
+        if (screen != "player" || playerModalOpen()) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                touchDownX = event.x
+                touchDownY = event.y
+                touchDownAt = android.os.SystemClock.uptimeMillis()
+                touchDragging = false
+                touchSeekBase = pendingSeek ?: player?.currentPosition ?: 0L
+                touchSeekTarget = touchSeekBase
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!touchDragging && abs(event.x - touchDownX) > dp(18)) touchDragging = true
+                if (touchDragging) dragSeek(event.x)
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (touchDragging) {
+                    if (touchSeekTarget != touchSeekBase) {
+                        pendingSeek = touchSeekTarget
+                        main.removeCallbacks(seekRunnable)
+                        main.post(seekRunnable)
+                    }
+                    touchDragging = false
+                } else if (
+                    android.os.SystemClock.uptimeMillis() - touchDownAt < 350 &&
+                        abs(event.x - touchDownX) < dp(16) && abs(event.y - touchDownY) < dp(16)
+                ) {
+                    playerTap(event.x, event.y)
+                }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                touchDragging = false
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun dragSeek(x: Float) {
+        val p = player ?: return
+        if (!playbackReady) return
+        val duration = p.duration
+        if (duration <= 0) return
+        val width = root.width.coerceAtLeast(1)
+        val span = (duration / 10).coerceIn(60_000L, 300_000L).toFloat()
+        val delta = ((x - touchDownX) / width * span).toLong()
+        touchSeekTarget = (touchSeekBase + delta).coerceIn(0L, (duration - 500).coerceAtLeast(0L))
+        pendingSeek = touchSeekTarget
+        showHud()
+        updatePlaybackText()
+    }
+
+    private fun playerTap(x: Float, y: Float) {
+        if (playError || recoveryDisplayActive) return
+        if (playerControlsOpen()) {
+            hidePlaybackOverlay()
+            return
+        }
+        val width = root.width.coerceAtLeast(1)
+        val height = root.height.coerceAtLeast(1)
+        val center = x > width * .3f && x < width * .7f && y > height * .2f && y < height * .8f
+        when {
+            center -> showPanel()
+            x < width * .3f && playbackReady -> seek(-1, 0)
+            x > width * .7f && playbackReady -> seek(1, 0)
+            else -> showHud()
+        }
+    }
+
     private fun showPanel() {
         seasonBanner?.visibility = View.GONE
         if (playError || recoveryDisplayActive) return
@@ -4876,7 +4962,12 @@ class MainActivity : Activity() {
             return
         }
         // Navigation is the outermost level on every page, including the scan action.
-        if (screen == "catalog" && catalogShell?.hasNavigationFocus == true) {
+        // 手机（触屏设备）在主界面按返回时直接给出退出菜单，不要求先切焦点到侧栏。
+        if (screen == "catalog" &&
+            (catalogShell?.hasNavigationFocus == true ||
+                (lastTouchAt > 0L && android.os.SystemClock.uptimeMillis() - lastTouchAt < 10_000L &&
+                    tab != 6 && query.isBlank()))
+        ) {
             tvTools.confirm("退出bkysHGTV", "确定退出？", currentFocus) { finish() }
             return
         }
@@ -4938,6 +5029,13 @@ class MainActivity : Activity() {
     override fun onUserInteraction() {
         super.onUserInteraction()
         gradualPreloader?.yieldToUser()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            lastTouchAt = android.os.SystemClock.uptimeMillis()
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
