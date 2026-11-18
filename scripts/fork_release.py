@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -28,10 +29,11 @@ VARIANTS = (
     ("app-arm64-v8a-release.apk", "android6-arm64-v8a", "arm64-v8a"),
 )
 
-NOTES = (
-    "同步上游 N3urda/hongguoTV 源码，由 bkys/hongguoTV 使用自有发布证书自动构建。"
-    "提供 Android 6.0+（API 23）通用包、ARM32 与 ARM64 安装包；不含 Android 5 兼容包。"
-    "应用内更新已指向本仓库 Release，可直接检查并覆盖安装。仅限个人研究使用，请勿传播或用于商业用途。"
+UPSTREAM = "N3urda/hongguoTV"
+INSTALL = (
+    "本 fork 仅提供 Android 6.0+（API 23）安装包：通用包、ARM32、ARM64，同一证书签名，"
+    "可与后续版本覆盖安装；不明确 ABI 时用通用包。"
+    "本包由 bkys/hongguoTV 使用自有证书构建，仅限个人研究使用，请勿传播或用于商业用途。"
 )
 
 
@@ -133,6 +135,94 @@ def repo_name():
     return repo
 
 
+def upstream_notes(version):
+    """取上游同版本 Release 的说明，去掉与本 fork 抬头重复的标题和构建说明。"""
+    url = f"https://api.github.com/repos/{UPSTREAM}/releases/tags/kotlin-v{version}"
+    request = urllib.request.Request(url, headers={"User-Agent": "bkys-fork-release"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.load(response).get("body") or ""
+    except Exception as error:
+        print(f"无法读取上游 {version} 的发布说明：{error}")
+        return ""
+    lines = (line.strip() for line in body.splitlines())
+    kept = [line for line in lines
+            if line and not line.startswith(("hongguoTV ", "构建要求", "源码提交：", "原发布证书签名"))]
+    return "\n\n".join(kept).strip()
+
+
+def previous_release_tag(version):
+    tags = [tag for tag in run("git", "tag", "--list", "kotlin-v*").split()
+            if re.fullmatch(r"kotlin-v\d+(?:\.\d+)*", tag)]
+    current = version_key(f"kotlin-v{version}")
+    older = sorted((tag for tag in tags if version_key(tag) < current),
+                   key=version_key, reverse=True)
+    for tag in older:
+        if subprocess.run(["git", "merge-base", "--is-ancestor", tag, "HEAD"],
+                          cwd=ROOT, capture_output=True).returncode == 0:
+            return tag
+    return None
+
+
+def own_changes(previous):
+    """本版本相对上一个发布的提交里，属于本 fork 而非上游的那些。"""
+    if not previous:
+        return []
+    args = ["git", "log", f"{previous}..HEAD", "--no-merges", "--format=%s"]
+    has_upstream = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "upstream/main"],
+                                  cwd=ROOT, capture_output=True).returncode == 0
+    if has_upstream:
+        args += ["--not", "upstream/main"]
+    try:
+        subjects = run(*args).splitlines()
+    except subprocess.CalledProcessError:
+        return []
+    changes = []
+    for subject in subjects:
+        subject = subject.strip()
+        # CI、构建、文档类提交与用户看到的功能无关，不写进版本介绍。
+        if not subject or re.match(r"^(ci|build|chore|docs|style|test)(\(|:)", subject):
+            continue
+        if subject not in changes:
+            changes.append(subject)
+    return changes[:8]
+
+
+def compose_notes(version, code):
+    """拼出上游说明 + 本版本自有改动的介绍。
+
+    返回（GitHub Release 用全文, update.json 里给应用内更新弹窗用的摘要）。
+    """
+    upstream = upstream_notes(version)
+    changes = own_changes(previous_release_tag(version))
+    if upstream:
+        upstream_block = f"上游 {UPSTREAM} {version} 更新：\n{upstream}"
+    elif len(version.split(".")) > 3:
+        base = version.rsplit(".", 1)[0]
+        upstream_block = f"本版基于上游 {base} 的自有改动修订，上游没有对应的 {version} 版本说明。"
+    else:
+        upstream_block = f"上游 {UPSTREAM} {version} 更新：上游未提供版本说明。"
+    sections = [
+        f"bkysHGTV {version}（versionCode {code}），Android 6.0+（API 23）。",
+        upstream_block,
+    ]
+    if changes:
+        sections.append("本版本自定义改动：\n" + "\n".join(f"- {change}" for change in changes))
+    sections.append(INSTALL)
+
+    if upstream:
+        lead = upstream.split("\n\n")[0]
+        summary = f"上游 {version}：{lead}"
+    else:
+        summary = upstream_block
+    if changes:
+        summary += "\n本版本自定义改动：" + "；".join(changes)
+    summary += "\n" + INSTALL
+    if len(summary) > 1400:
+        summary = summary[:1399] + "…"
+    return "\n\n".join(sections), summary
+
+
 def prepare(tag, version, code):
     if tag != f"kotlin-v{version}":
         fail(f"标签 {tag} 与版本 {version} 不一致")
@@ -154,21 +244,20 @@ def prepare(tag, version, code):
     universal = assets[0]
     digest = sha256(universal)
     size = universal.stat().st_size
+    notes, summary = compose_notes(version, code)
     manifest = dict(
         schema=1, packageName=PACKAGE, versionCode=code, versionName=version, minSdk=MIN_SDK,
         tag=tag, sourceCommit=commit,
         apk=dict(name=universal.name, size=size, sha256=digest),
         platformApk=dict(name=universal.name, size=size, sha256=digest),
-        notes=NOTES,
+        notes=summary,
     )
     (OUT / "update.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     (OUT / "SHA256SUMS").write_text("".join(f"{sha256(p)}  {p.name}\n" for p in (*assets, OUT / "update.json")))
     (OUT / "release-notes.md").write_text(
-        f"bkysHGTV {version}（versionCode {code}），Android 6.0+（API 23）。\n\n{NOTES}\n\n"
-        f"源码提交：{commit}。\n\n"
+        f"{notes}\n\n"
         "安装包：`hongguotv-kotlin-%s-android6.apk`（通用）、`-android6-arm32-v7a.apk`（ARM32）、"
-        "`-android6-arm64-v8a.apk`（ARM64）。三者同一证书签名，可与后续版本覆盖安装；"
-        "不明确 ABI 时用通用包。\n" % version
+        "`-android6-arm64-v8a.apk`（ARM64）。\n\n源码提交：%s。\n" % (version, commit)
     )
     print(f"已生成 {len(assets)} 个安装包与 update.json，版本 {version} / {code}")
 
