@@ -175,24 +175,45 @@ def own_changes(previous):
     """本版本相对上一个发布的提交里，属于本 fork 而非上游的那些。"""
     if not previous:
         return []
-    args = ["git", "log", f"{previous}..HEAD", "--no-merges", "--format=%s"]
+    args = ["git", "log", f"{previous}..HEAD", "--no-merges", "--format=%s%x1f%b%x1e"]
     has_upstream = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "upstream/main"],
                                   cwd=ROOT, capture_output=True).returncode == 0
     if has_upstream:
         args += ["--not", "upstream/main"]
     try:
-        subjects = run(*args).splitlines()
+        records = run(*args).split("\x1e")
     except subprocess.CalledProcessError:
         return []
     changes = []
-    for subject in subjects:
+    for record in records:
+        subject, _, body = record.partition("\x1f")
         subject = subject.strip()
         # CI、构建、文档类提交与用户看到的功能无关，不写进版本介绍。
         if not subject or re.match(r"^(ci|build|chore|docs|style|test)(\(|:)", subject):
             continue
-        if subject not in changes:
-            changes.append(subject)
+        change = chinese_change(subject, body)
+        if change and change not in changes:
+            changes.append(change)
     return changes[:8]
+
+
+CJK = re.compile(r"[\u4e00-\u9fff]")
+CONVENTION = re.compile(r"^(feat|fix|perf|refactor|release)(\([^)]*\))?:\s*", re.I)
+
+
+def chinese_change(subject, body):
+    """版本介绍只用中文：优先中文提交标题，其次正文里的“说明：”行。"""
+    text = CONVENTION.sub("", subject).strip()
+    if CJK.search(text):
+        return text
+    for line in body.splitlines():
+        line = CONVENTION.sub("", line.strip()).strip()
+        for marker in ("说明：", "说明:"):
+            if line.startswith(marker):
+                line = line[len(marker):].strip()
+                if CJK.search(line):
+                    return line
+    return "其他细节优化"
 
 
 def compose_notes(version, code):

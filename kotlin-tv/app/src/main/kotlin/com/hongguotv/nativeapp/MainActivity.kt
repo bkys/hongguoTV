@@ -4546,7 +4546,7 @@ class MainActivity : Activity() {
         showHud()
     }
 
-    /** 播放页触摸：中央单击开/关菜单，左右拖动按距离快进快退，左右单击 ±10 秒。 */
+    /** 播放页触摸：中央单击开/关菜单，左右拖动按距离快进快退。 */
     private fun handlePlayerTouch(event: MotionEvent): Boolean {
         if (screen != "player" || playerModalOpen()) return false
         when (event.actionMasked) {
@@ -4610,13 +4610,9 @@ class MainActivity : Activity() {
         }
         val width = root.width.coerceAtLeast(1)
         val height = root.height.coerceAtLeast(1)
-        val center = x > width * .3f && x < width * .7f && y > height * .2f && y < height * .8f
-        when {
-            center -> showPanel()
-            x < width * .3f && playbackReady -> seek(-1, 0)
-            x > width * .7f && playbackReady -> seek(1, 0)
-            else -> showHud()
-        }
+        // 轻点只用于呼出设置面板；快进快退统一走左右拖动或遥控器按键。
+        if (x > width * .3f && x < width * .7f && y > height * .2f && y < height * .8f) showPanel()
+        else showHud()
     }
 
     private fun showPanel() {
