@@ -47,8 +47,12 @@ class AppUpdater(
     private var ready = false
     private var permissionRequested = false
     private var dialog: AlertDialog? = null
+    private var prompt: AlertDialog? = null
+    private var promptedCode = 0L
+    private var installAfterDownload = false
+    private var sessionChecked = false
     val showing
-        get() = dialog?.isShowing == true
+        get() = dialog?.isShowing == true || prompt?.isShowing == true
 
     private var statusView: TextView? = null
     private var anchor: View? = null
@@ -61,13 +65,26 @@ class AppUpdater(
         object : Runnable {
             override fun run() {
                 if (!active) return
-                if (idle() && dialog == null && !busy && auto) {
+                if (idle() && dialog == null && prompt == null && !busy && auto) {
                     val now = System.currentTimeMillis()
                     val last = preferences.getLong("last_attempt", 0)
                     val update = available
                     when {
-                        update != null && !ready && now >= retryAfter -> download()
-                        !ready && (now < last || now - last >= 6 * 60 * 60 * 1000L) -> check()
+                        update != null -> {
+                            offer(update)
+                            when {
+                                ready && installAfterDownload -> {
+                                    installAfterDownload = false
+                                    install()
+                                }
+                                !ready && now >= retryAfter -> download()
+                            }
+                        }
+                        // 每次打开软件至少检查一次，之后按六小时间隔复查。
+                        !ready && (!sessionChecked || now < last || now - last >= 6 * 60 * 60 * 1000L) -> {
+                            sessionChecked = true
+                            check()
+                        }
                     }
                 }
                 main.postDelayed(this, 15000)
@@ -99,6 +116,8 @@ class AppUpdater(
         main.removeCallbacks(poll)
         interrupt()
         dialog?.dismiss()
+        prompt?.dismiss()
+        installAfterDownload = false
     }
 
     fun interrupt() {
@@ -206,6 +225,52 @@ class AppUpdater(
         }
     }
 
+    /** 打开软件后提示新版本：立刻更新，或七天内不再提醒。 */
+    private fun offer(update: AppUpdate) {
+        if (!active || busy || !idle() || dialog != null || prompt != null) return
+        val now = System.currentTimeMillis()
+        val snoozed =
+            preferences.getLong("snooze_code", 0) == update.versionCode &&
+                now < preferences.getLong("snooze_until", 0)
+        if (snoozed || promptedCode == update.versionCode) return
+        promptedCode = update.versionCode
+        val dp = activity.resources.displayMetrics.density
+        val body =
+            TextView(activity).apply {
+                text =
+                    "${update.notes}\n\n" +
+                        "如不能播放或有其他异常，请到「设置 → 检查更新」手动更新。"
+                textSize = 15f
+                setTextColor(TvStyle.muted)
+                setPadding((24 * dp).toInt(), (12 * dp).toInt(), (24 * dp).toInt(), 0)
+            }
+        val next =
+            AlertDialog.Builder(activity)
+                .setTitle("发现新版本 ${update.versionName}")
+                .setView(ScrollView(activity).apply { addView(body) })
+                .setNegativeButton("7天后再提醒", null)
+                .setPositiveButton("立刻更新", null)
+                .create()
+        prompt = next
+        next.setOnDismissListener { if (prompt === next) prompt = null }
+        next.show()
+        next.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            next.dismiss()
+            installAfterDownload = true
+            if (ready) install() else download()
+        }
+        next.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+            preferences.edit()
+                .putLong("snooze_code", update.versionCode)
+                .putLong("snooze_until", System.currentTimeMillis() + 7 * 24 * 60 * 60 * 1000L)
+                .apply()
+            next.dismiss()
+        }
+        next.getButton(AlertDialog.BUTTON_POSITIVE).post {
+            if (prompt === next) next.getButton(AlertDialog.BUTTON_POSITIVE).requestFocus()
+        }
+    }
+
     private fun <T> work(action: () -> T, done: (T) -> Unit) {
         busy = true
         renderActions()
@@ -226,6 +291,7 @@ class AppUpdater(
                         if (active && generation == ticket) {
                             busy = false
                             ready = false
+                            installAfterDownload = false
                             retryAfter = System.currentTimeMillis() + 30 * 60 * 1000L
                             updateStatus(
                                 if (e is IOException) e.message ?: "更新失败，请重试" else "更新校验失败，请重试"
@@ -261,6 +327,7 @@ class AppUpdater(
                 updateStatus(
                     "发现 ${update.versionName} · ${"%.1f".format(update.size/1048576.0)} MB\n${update.notes}"
                 )
+                offer(update)
                 if (auto || dialog != null) download()
             }
         }
@@ -282,6 +349,10 @@ class AppUpdater(
         }) {
             ready = true
             updateStatus("${update.versionName} 已下载并校验\n${update.notes}\n\n确认后由系统覆盖安装，保留本机记录。")
+            if (installAfterDownload && idle()) {
+                installAfterDownload = false
+                install()
+            }
         }
     }
 

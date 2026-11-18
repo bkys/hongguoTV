@@ -39,7 +39,15 @@ internal class CatalogShell(context: Context, private val phone: (View) -> Unit 
             contentDescription = "bkysHGTV"
             isFocusable = false
             (drawable as? android.graphics.drawable.BitmapDrawable)?.isFilterBitmap = false
-        }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 12 else 24) })
+        }, LayoutParams(-1, dp(if (compact) 40 else 56)).apply { bottomMargin = dp(if (compact) 4 else 8) })
+        rail.addView(TextView(context).apply {
+            text = "bkysHGTV"
+            textSize = if (compact) 10f else 11f
+            gravity = android.view.Gravity.CENTER
+            maxLines = 1
+            setTextColor(TvStyle.muted)
+            isFocusable = false
+        }, LayoutParams(-1, dp(if (compact) 18 else 22)).apply { bottomMargin = dp(if (compact) 8 else 14) })
         destinations.forEach { (index, label) ->
             if (index == 9) rail.addView(Space(context), LayoutParams(1, 0, 1f))
             val button = TextView(context).apply {

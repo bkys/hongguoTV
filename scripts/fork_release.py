@@ -136,19 +136,26 @@ def repo_name():
 
 
 def upstream_notes(version):
-    """取上游同版本 Release 的说明，去掉与本 fork 抬头重复的标题和构建说明。"""
-    url = f"https://api.github.com/repos/{UPSTREAM}/releases/tags/kotlin-v{version}"
-    request = urllib.request.Request(url, headers={"User-Agent": "bkys-fork-release"})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = json.load(response).get("body") or ""
-    except Exception as error:
-        print(f"无法读取上游 {version} 的发布说明：{error}")
-        return ""
-    lines = (line.strip() for line in body.splitlines())
-    kept = [line for line in lines
-            if line and not line.startswith(("hongguoTV ", "构建要求", "源码提交：", "原发布证书签名"))]
-    return "\n\n".join(kept).strip()
+    """取上游同版本 Release 的说明；fork 修订版（四段版本号）回退到基础版本的说明。"""
+    candidates = [version]
+    if len(version.split(".")) > 3:
+        candidates.append(version.rsplit(".", 1)[0])
+    for candidate in candidates:
+        url = f"https://api.github.com/repos/{UPSTREAM}/releases/tags/kotlin-v{candidate}"
+        request = urllib.request.Request(url, headers={"User-Agent": "bkys-fork-release"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = json.load(response).get("body") or ""
+        except Exception as error:
+            print(f"无法读取上游 {candidate} 的发布说明：{error}")
+            continue
+        lines = (line.strip() for line in body.splitlines())
+        kept = [line for line in lines
+                if line and not line.startswith(("hongguoTV ", "构建要求", "源码提交：", "原发布证书签名"))]
+        text = "\n\n".join(kept).strip()
+        if text:
+            return text, candidate
+    return "", None
 
 
 def previous_release_tag(version):
@@ -193,10 +200,10 @@ def compose_notes(version, code):
 
     返回（GitHub Release 用全文, update.json 里给应用内更新弹窗用的摘要）。
     """
-    upstream = upstream_notes(version)
+    upstream, source = upstream_notes(version)
     changes = own_changes(previous_release_tag(version))
     if upstream:
-        upstream_block = f"上游 {UPSTREAM} {version} 更新：\n{upstream}"
+        upstream_block = f"上游 {UPSTREAM} {source} 更新：\n{upstream}"
     elif len(version.split(".")) > 3:
         base = version.rsplit(".", 1)[0]
         upstream_block = f"本版基于上游 {base} 的自有改动修订，上游没有对应的 {version} 版本说明。"
@@ -212,7 +219,7 @@ def compose_notes(version, code):
 
     if upstream:
         lead = upstream.split("\n\n")[0]
-        summary = f"上游 {version}：{lead}"
+        summary = f"上游 {source}：{lead}"
     else:
         summary = upstream_block
     if changes:

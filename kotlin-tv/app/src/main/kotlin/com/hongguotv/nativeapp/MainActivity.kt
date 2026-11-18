@@ -2374,7 +2374,7 @@ class MainActivity : Activity() {
                     content.addView(text("当前版本  ·  ${BuildConfig.VERSION_NAME}", 17f).apply {
                         setPadding(0, dp(4), 0, dp(12))
                     })
-                    content.addView(text("主动检查新版本，查看更新并下载安装。", 15f, muted).apply {
+                    content.addView(text("主动检查新版本，查看更新并下载安装。如不能播放或有其他异常，请先在这里手动更新。", 15f, muted).apply {
                         setPadding(0, 0, 0, dp(16))
                     })
                     lateinit var updates: TextView
