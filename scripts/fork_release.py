@@ -29,7 +29,11 @@ VARIANTS = (
     ("app-arm64-v8a-release.apk", "android6-arm64-v8a", "arm64-v8a"),
 )
 
-UPSTREAM = "N3urda/hongguoTV"
+# 代码上游：本 fork 跟随它同步应用代码与版本号。
+CODE_UPSTREAM = "N3urda/hongguoTV"
+# 播放源上游：只用于播放地址、版本参数与签名常量，不合并代码，由 upstream-watch 监控。
+PLAYBACK_UPSTREAM = "tsukiyo-zero/hongguoTV"
+PLAYBACK_STATE = ROOT / ".github/upstream/tsukiyo.json"
 INSTALL = (
     "本 fork 仅提供 Android 6.0+（API 23）安装包：通用包、ARM32、ARM64，同一证书签名，"
     "可与后续版本覆盖安装；不明确 ABI 时用通用包。"
@@ -136,12 +140,12 @@ def repo_name():
 
 
 def upstream_notes(version):
-    """取上游同版本 Release 的说明；fork 修订版（四段版本号）回退到基础版本的说明。"""
+    """取代码上游（N3urda）同版本 Release 的说明；fork 修订版（四段版本号）回退到基础版本的说明。"""
     candidates = [version]
     if len(version.split(".")) > 3:
         candidates.append(version.rsplit(".", 1)[0])
     for candidate in candidates:
-        url = f"https://api.github.com/repos/{UPSTREAM}/releases/tags/kotlin-v{candidate}"
+        url = f"https://api.github.com/repos/{CODE_UPSTREAM}/releases/tags/kotlin-v{candidate}"
         request = urllib.request.Request(url, headers={"User-Agent": "bkys-fork-release"})
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
@@ -216,33 +220,88 @@ def chinese_change(subject, body):
     return "其他细节优化"
 
 
+def tsukiyo_commits(raw):
+    """从 git log 记录中挑出明确提到 tsukiyo 的提交标题。"""
+    hits = []
+    for record in raw.split("\x1e"):
+        subject, _, body = record.partition("\x1f")
+        subject = subject.strip()
+        if subject and "tsukiyo" in f"{subject}\n{body}".lower() and subject not in hits:
+            hits.append(subject)
+    return hits
+
+
+def playback_upstream(previous):
+    """本版本是否采用了 tsukiyo-zero 的播放源；是则返回上游版本与相关提交。
+
+    只按提交说明里是否明确提到 tsukiyo 判断，避免把本仓库自己的播放源调整误记成上游更新。
+    移植 tsukiyo 的提交需要写明 tsukiyo（upstream-watch 生成的 PR 标题已包含）。
+    """
+    if not previous:
+        return None
+    args = ["git", "log", f"{previous}..HEAD", "--no-merges", "--format=%s%x1f%b%x1e"]
+    has_upstream = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "upstream/main"],
+                                  cwd=ROOT, capture_output=True).returncode == 0
+    if has_upstream:
+        # 只看本 fork 自己的提交，避免把代码上游里的字样误认成播放源移植。
+        args += ["--not", "upstream/main"]
+    try:
+        raw = run(*args)
+    except subprocess.CalledProcessError:
+        return None
+    hits = tsukiyo_commits(raw)
+    if not hits:
+        return None
+    version = ""
+    try:
+        version = json.loads(PLAYBACK_STATE.read_text()).get("version", "")
+    except (OSError, json.JSONDecodeError):
+        pass
+    return dict(version=version, commits=hits)
+
+
+def playback_block(info):
+    version = f" {info['version']}" if info.get("version") else ""
+    return f"播放源上游 {PLAYBACK_UPSTREAM}{version} 更新：本版采用其播放源地址变更。"
+
+
 def compose_notes(version, code):
     """拼出上游说明 + 本版本自有改动的介绍。
 
+    版本号跟随代码上游（N3urda），播放源地址可能来自另一个上游（tsukiyo-zero），
+    两者必须分开写，不能合并成一句“上游更新”。
+
     返回（GitHub Release 用全文, update.json 里给应用内更新弹窗用的摘要）。
     """
-    upstream, source = upstream_notes(version)
-    changes = own_changes(previous_release_tag(version))
-    if upstream:
-        upstream_block = f"上游 {UPSTREAM} {source} 更新：\n{upstream}"
+    code_notes, code_source = upstream_notes(version)
+    previous = previous_release_tag(version)
+    playback = playback_upstream(previous)
+    changes = own_changes(previous)
+    sections = [f"bkysHGTV {version}（versionCode {code}），Android 6.0+（API 23）。"]
+    if playback:
+        sections.append(playback_block(playback))
+    if code_notes:
+        sections.append(f"代码上游 {CODE_UPSTREAM} {code_source} 更新：\n{code_notes}")
     elif len(version.split(".")) > 3:
         base = version.rsplit(".", 1)[0]
-        upstream_block = f"本版基于上游 {base} 的自有改动修订，上游没有对应的 {version} 版本说明。"
+        sections.append(f"本版基于代码上游 {base} 的自有改动修订，上游没有对应的 {version} 版本说明。")
     else:
-        upstream_block = f"上游 {UPSTREAM} {version} 更新：上游未提供版本说明。"
-    sections = [
-        f"bkysHGTV {version}（versionCode {code}），Android 6.0+（API 23）。",
-        upstream_block,
-    ]
+        sections.append(f"代码上游 {CODE_UPSTREAM} {version}：上游未提供版本说明。")
     if changes:
         sections.append("本版本自定义改动：\n" + "\n".join(f"- {change}" for change in changes))
     sections.append(INSTALL)
 
-    if upstream:
-        lead = upstream.split("\n\n")[0]
-        summary = f"上游 {source}：{lead}"
+    summary_parts = []
+    if playback:
+        summary_parts.append(playback_block(playback))
+    if code_notes:
+        summary_parts.append(f"代码上游 {code_source}：{code_notes.split(chr(10) + chr(10))[0]}")
+    elif len(version.split(".")) > 3:
+        base = version.rsplit(".", 1)[0]
+        summary_parts.append(f"本版基于代码上游 {base} 的自有改动修订。")
     else:
-        summary = upstream_block
+        summary_parts.append(f"代码上游 {CODE_UPSTREAM} {version}：上游未提供版本说明。")
+    summary = "\n".join(summary_parts)
     if changes:
         summary += "\n本版本自定义改动：" + "；".join(changes)
     summary += "\n" + INSTALL
