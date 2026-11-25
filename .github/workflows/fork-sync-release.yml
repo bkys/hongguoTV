@@ -10,6 +10,9 @@ on:
   schedule:
     # GitHub 的定时触发是尽力而为，可能延迟或跳过；每小时一次以减少漏检上游更新。
     - cron: '17 * * * *'
+  # 允许用仓库写入权限的 token 通过 API 立即触发一次（Actions 的 workflow_dispatch 需要 actions:write）。
+  repository_dispatch:
+    types: [sync-release]
   workflow_dispatch:
     inputs:
       force_release:
