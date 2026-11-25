@@ -1,0 +1,39 @@
+name: Watch tsukiyo playback upstream
+
+on:
+  schedule:
+    - cron: "43 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: tsukiyo-upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM_REPO: tsukiyo-zero/hongguoTV
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch playback upstream
+        run: |
+          git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" \
+            main:refs/remotes/tsukiyo/main
+
+      - name: Detect and open analysis PR
+        run: python3 scripts/upstream_watch.py

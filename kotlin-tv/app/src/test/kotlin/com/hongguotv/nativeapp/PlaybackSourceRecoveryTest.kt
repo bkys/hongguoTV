@@ -39,6 +39,10 @@ class PlaybackSourceRecoveryTest {
             val request = chain.request()
             val response = Response.Builder().request(request).protocol(Protocol.HTTP_1_1).message("fixture")
             when (request.url.encodedPath) {
+                "/novel/player/video_model/v1/" -> {
+                    requests += "video-model"
+                    response.code(200).body("".toResponseBody()).build()
+                }
                 "/novel/player/multi_video_model/preload/v1" -> {
                     requests += "primary"
                     val model = if (primaryEmpty) "" else
@@ -79,8 +83,9 @@ class PlaybackSourceRecoveryTest {
         }
 
         fun assertWarmRecoveryRequests() {
-            assertEquals("primary", requests.first())
-            assertEquals(listOf("backup", "cdn"), requests.drop(1).sorted())
+            assertEquals("video-model", requests.first())
+            assertEquals("primary", requests[1])
+            assertEquals(listOf("backup", "cdn"), requests.drop(2).sorted())
         }
     }
 
@@ -96,7 +101,7 @@ class PlaybackSourceRecoveryTest {
         fixture.requests.clear()
         val error = assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open(repo = playerRepository) }
         assertTrue(error.allPlaybackModelsEmpty)
-        assertEquals(listOf("primary", "backup"), fixture.requests)
+        assertEquals(listOf("video-model", "primary", "backup"), fixture.requests)
     }
 
     @Test
@@ -126,7 +131,14 @@ class PlaybackSourceRecoveryTest {
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open("10102") }
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open(speculative = true) }
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open(quality = 480) }
-        assertEquals(listOf("primary", "backup", "primary", "primary", "backup"), fixture.requests)
+        assertEquals(
+            listOf(
+                "video-model", "primary", "backup",
+                "video-model", "primary",
+                "video-model", "primary", "backup",
+            ),
+            fixture.requests,
+        )
     }
 
     @Test
@@ -139,7 +151,7 @@ class PlaybackSourceRecoveryTest {
 
         fixture.requests.clear()
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open() }
-        assertEquals(listOf("primary", "backup"), fixture.requests)
+        assertEquals(listOf("video-model", "primary", "backup"), fixture.requests)
     }
 
     @Test
@@ -157,6 +169,6 @@ class PlaybackSourceRecoveryTest {
         fixture.backupStatus = 200
         fixture.requests.clear()
         assertThrows(EmptyPlaybackResponseException::class.java) { fixture.open() }
-        assertEquals(listOf("primary", "backup"), fixture.requests)
+        assertEquals(listOf("video-model", "primary", "backup"), fixture.requests)
     }
 }
