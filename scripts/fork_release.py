@@ -11,7 +11,6 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -145,13 +144,16 @@ def upstream_notes(version):
     if len(version.split(".")) > 3:
         candidates.append(version.rsplit(".", 1)[0])
     for candidate in candidates:
-        url = f"https://api.github.com/repos/{CODE_UPSTREAM}/releases/tags/kotlin-v{candidate}"
-        request = urllib.request.Request(url, headers={"User-Agent": "bkys-fork-release"})
+        result = subprocess.run(
+            ["gh", "api", f"repos/{CODE_UPSTREAM}/releases/tags/kotlin-v{candidate}"],
+            cwd=ROOT, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"无法读取上游 {candidate} 的发布说明：{result.stderr.strip()}")
+            continue
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                body = json.load(response).get("body") or ""
-        except Exception as error:
-            print(f"无法读取上游 {candidate} 的发布说明：{error}")
+            body = json.loads(result.stdout).get("body") or ""
+        except json.JSONDecodeError:
+            print(f"无法解析上游 {candidate} 的发布说明")
             continue
         lines = (line.strip() for line in body.splitlines())
         kept = [line for line in lines
@@ -221,12 +223,17 @@ def chinese_change(subject, body):
 
 
 def tsukiyo_commits(raw):
-    """从 git log 记录中挑出明确提到 tsukiyo 的提交标题。"""
+    """从 git log 记录中挑出明确提到 tsukiyo 的功能提交标题。
+
+    CI/构建/文档类提交（例如 upstream-watch 记录监控状态）不算播放源更新。
+    """
     hits = []
     for record in raw.split("\x1e"):
         subject, _, body = record.partition("\x1f")
         subject = subject.strip()
-        if subject and "tsukiyo" in f"{subject}\n{body}".lower() and subject not in hits:
+        if not subject or re.match(r"^(ci|build|chore|docs|style|test)(\(|:)", subject):
+            continue
+        if "tsukiyo" in f"{subject}\n{body}".lower() and subject not in hits:
             hits.append(subject)
     return hits
 
@@ -262,7 +269,9 @@ def playback_upstream(previous):
 
 def playback_block(info):
     version = f" {info['version']}" if info.get("version") else ""
-    return f"播放源上游 {PLAYBACK_UPSTREAM}{version} 更新：本版采用其播放源地址变更。"
+    return (f"播放源：同时包含代码上游 {CODE_UPSTREAM} 与播放源上游 "
+            f"{PLAYBACK_UPSTREAM}{version} 的取源链路；"
+            "tsukiyo 单集高清取源优先，N3urda 取源保留为回退。")
 
 
 def compose_notes(version, code):
@@ -398,27 +407,68 @@ def emit(values):
         print(lines, end="")
 
 
+def upstream_released(version):
+    """代码上游是否已经正式发布该版本；只改 main 里的版本号不算发布。"""
+    result = subprocess.run(
+        ["gh", "api", f"repos/{CODE_UPSTREAM}/releases/tags/kotlin-v{version}", "--silent"],
+        cwd=ROOT, capture_output=True, text=True)
+    if result.returncode == 0:
+        return True
+    if "HTTP 404" in result.stderr:
+        return False
+    print(f"无法确认代码上游是否已发布 {version}：{result.stderr.strip()}")
+    return False
+
+
+def next_index(tags, base_version):
+    index = 1
+    while f"kotlin-v{base_version}.{index}" in tags:
+        index += 1
+    return index
+
+
+def latest_release_for(base_version):
+    """返回当前大版本（base 或 base.N）中已是 HEAD 祖先的最新标签。"""
+    base_key = version_key(f"kotlin-v{base_version}")
+    tags = [tag for tag in run("git", "tag", "--list", "kotlin-v*").split()
+            if re.fullmatch(r"kotlin-v\d+(?:\.\d+)*", tag)]
+    candidates = []
+    for tag in tags:
+        key = version_key(tag)
+        if key[:len(base_key)] == base_key and key >= base_key:
+            candidates.append((key, tag))
+    for _, tag in sorted(candidates, reverse=True):
+        if subprocess.run(["git", "merge-base", "--is-ancestor", tag, "HEAD"],
+                          cwd=ROOT, capture_output=True).returncode == 0:
+            return tag
+    return None
+
+
 def plan(force):
     """决定本次是否发布，并给 Gradle 提供 versionName / versionCode。
 
-    默认跟随上游版本：只在上游 versionName 尚未发布过时发布。
-    force 用于把当前 main 立即发一版：版本号记作 <上游版本>.<序号>。
-    versionCode 统一用 上游 versionCode * 100 (+序号)，保证跨版本单调递增。
+    版本规则：
+    - 大版本跟随代码上游 N3urda/hongguoTV，且只在代码上游正式发布该版本后才发布；
+    - 大版本发布后，若又移植了 tsukiyo-zero 的播放源（或手动 force），
+      在已发布大版本后加序号：0.16.15.1、0.16.15.2；
+    - versionCode = 上游 versionCode * 10000 + 序号，避免上游 versionCode 变动导致倒挂。
     """
     base_version, base_code = source_version()
     repo = repo_name()
     tags = {item["tagName"] for item in releases(repo) if not item["isDraft"]}
     base_tag = f"kotlin-v{base_version}"
-    version, code, release = base_version, base_code * 100, True
-    if base_tag in tags:
-        if force:
-            index = 1
-            while f"kotlin-v{base_version}.{index}" in tags:
-                index += 1
-            version = f"{base_version}.{index}"
-            code = base_code * 100 + index
-        else:
-            release = False
+    released = base_tag in tags
+    version, index, release = base_version, 0, False
+    if not force and not upstream_released(base_version):
+        # 代码上游只在 main 里改了版本号、还没正式发布：等它发布，避免把未发布内容标成新版本。
+        print(f"跳过发布：代码上游 {CODE_UPSTREAM} 尚未正式发布 {base_version}")
+    elif not released:
+        release = True
+    elif force or playback_upstream(latest_release_for(base_version) or base_tag):
+        index = next_index(tags, base_version)
+        version = f"{base_version}.{index}"
+        release = f"kotlin-v{version}" not in tags
+    code = base_code * 10000 + index
     tag = f"kotlin-v{version}"
     if tag in tags:
         release = False

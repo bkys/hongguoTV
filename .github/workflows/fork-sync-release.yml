@@ -3,6 +3,8 @@ name: Fork sync upstream and release
 # 定时把代码上游 N3urda/hongguoTV 合并进本 fork；上游版本号变化时自动签名构建并发布。
 # 播放源地址另来自 tsukiyo-zero/hongguoTV（由 upstream-watch 监控，不合并其代码），
 # 发布说明会分别标注两个上游，不要把播放源更新记成 N3urda 的版本更新。
+# 版本规则：大版本跟随代码上游，且只在其正式发布后发布；大版本发布后再移植 tsukiyo
+# 播放源时序号 +1（0.16.15.1、0.16.15.2），versionCode 为 上游 versionCode*10000+序号。
 # 也可在 Actions 页面手动触发；勾选 force_release 可把当前 main 立刻发一版。
 on:
   schedule:
