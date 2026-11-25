@@ -981,6 +981,16 @@ constructor(
         RequestScope.withDeadline(System.nanoTime() + TimeUnit.SECONDS.toNanos(if (speculative) 2 else 8)) {
             val profile = if (speculative) playbackSession.existing()
                 ?: throw IOException("播放设备尚未就绪") else playbackSession.profile(http)
+            // 单集 video_model/v1 优先返回高清档；不可用时回退到批量 preload。
+            try {
+                val ladder = MobilePlayback.videoModelLadder(
+                    id, profile.values, http, MobilePlayback.signer, clock(),
+                )
+                profile.recordPlayablePrimaryModel()
+                return@withDeadline ladder
+            } catch (_: IOException) {
+                RequestScope.ensureActive()
+            }
             try {
                 MobilePlayback.ladder(id, profile.values, http, MobilePlayback.signer, clock())
                     .also { profile.recordPlayablePrimaryModel() }

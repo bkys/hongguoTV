@@ -34,6 +34,18 @@
 
 测试包保持开发版本号；若电视已安装云端编号 10000 以上的新包，Android 会阻止降级，不能直接覆盖本包，不应为测试卸载清除记录。需按设备已安装编号另行构建测试包。代码同步不等于真实账号验收：扫码确认、预约结果与手机端一致性、退出换号、真实电视播放与遥控器均须实际验证。当前没有连接 Android 设备，本轮未发送短信、使用账号或写入平台预约。
 
+## 上游播放源持续监控（2026-11-25）
+
+`tsukiyo-zero/hongguoTV` 与本仓库没有共同 git 历史，不能直接 merge，也不能按 N3urda 旧上游的方式自动合并。新增 `.github/workflows/upstream-watch.yml`，每小时检查该上游的播放源相关文件：
+
+- 监控路径：`MobilePlayback.kt`、`PlaybackShapes.kt`、`PlaybackModels.kt`、`ContentRepository.kt`、`Signer.kt`、`V5Constants.kt`、`RemoteVideo.kt`、`PlayRetry.kt`、`PlaybackSources.kt` 等。
+- 发现变化时，`scripts/upstream_watch.py` 提取上游与本地的播放地址、模型路径、74532 参数、`field21`、`dr_scene` 差异，生成 `docs/upstream/tsukiyo-playback-watch.md`，并创建 `upstream/tsukiyo-<sha>` 分析 PR。
+- PR 只做分析和移植清单，不自动修改播放实现；在 PR 分支完成代码移植、测试和 `versionName`/`versionCode` 递增后再合并。
+- 合并后由 `.github/workflows/fork-sync-release.yml` 按版本号构建四种 APK 并发布。若仓库禁止 Actions 创建 PR，脚本会退回创建带分析内容的 Issue。
+- 已检查的上游提交记录在 `.github/upstream/tsukiyo.json`，避免重复告警。
+
+首次接入时已将该上游 0.1.40 的 `video_model/v1` 高清取源移植为 0.16.15，后续更新按上述流程处理。
+
 ## 登录后显示修复（2026-11-11）
 
 - 设置账户状态改为响应账号变更原位更新，登录和退出均及时刷新，保留焦点和当前弹窗；离开页面清理视图引用。

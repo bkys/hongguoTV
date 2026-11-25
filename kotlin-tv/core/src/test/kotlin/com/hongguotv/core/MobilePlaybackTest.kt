@@ -147,12 +147,12 @@ class MobilePlaybackTest {
         val rendition = repository.streamLadderWithCompatibility("123").renditions.single()
         assertEquals("https://example.org/video", rendition.url)
         assertEquals(720, rendition.quality)
-        assertEquals(listOf("POST", "GET"), requests.map { it.method })
-        assertEquals("123", requests[1].url.queryParameter("video_id"))
+        assertEquals(listOf("POST", "POST", "GET"), requests.map { it.method })
+        assertEquals("123", requests[2].url.queryParameter("video_id"))
         for (parameter in listOf("iid", "device_id", "cdid")) {
-            assertEquals(requests[0].url.queryParameter(parameter), requests[1].url.queryParameter(parameter))
+            assertEquals(requests[0].url.queryParameter(parameter), requests[2].url.queryParameter(parameter))
         }
-        val recovery = requests[1]
+        val recovery = requests[2]
         for (parameter in listOf("version_name", "version_code", "channel", "device_type", "os_version")) {
             assertEquals(requests[0].url.queryParameter(parameter), recovery.url.queryParameter(parameter))
         }
@@ -188,7 +188,7 @@ class MobilePlaybackTest {
         assertThrows(IOException::class.java) {
             scope.run { repo.streamLadderWithCompatibility("123", onPrimaryEmpty = scope::cancel) }
         }
-        assertEquals(listOf("POST"), requests.map { it.method })
+        assertEquals(listOf("POST", "POST"), requests.map { it.method })
     }
 
     @Test fun bothEmptyModelsRetainResponseDiagnosticsForRecovery() {
@@ -205,7 +205,7 @@ class MobilePlaybackTest {
         assertEquals("mobile-model=200/0B", (primary.suppressed.single() as PlaybackDiagnosticException).detail)
         val tab = error.suppressed.filterIsInstance<PlaybackDiagnosticException>().single()
         assertTrue(tab.detail.startsWith("video-tab-empty ") && tab.detail.contains("200/0B"))
-        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+        assertEquals(listOf("POST", "POST", "GET"), requests.map { it.method })
     }
 
     @Test fun emptyPrimaryDefersBackgroundWorkAcrossRepositoriesUntilRecoveryOrExpiry() {
@@ -246,7 +246,7 @@ class MobilePlaybackTest {
         assertEquals("mobile-model=200/0B", (primary.suppressed.single() as PlaybackDiagnosticException).detail)
         val tab = error.suppressed.filterIsInstance<PlaybackDiagnosticException>().single()
         assertTrue(tab.detail.startsWith("video-tab ") && tab.detail.endsWith("=timeout"))
-        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+        assertEquals(listOf("POST", "POST", "GET"), requests.map { it.method })
     }
 
     @Test fun tabFallbackDoesNotSelectAnotherEpisode() {
@@ -258,7 +258,7 @@ class MobilePlaybackTest {
         }
         assertEquals("stage=mobile-model", error.detail)
         assertFalse(error.allPlaybackModelsEmpty)
-        assertEquals(listOf("POST", "GET"), requests.map { it.method })
+        assertEquals(listOf("POST", "POST", "GET"), requests.map { it.method })
     }
 
     @Test fun bytevc2OnlyTabModelUsesAlternateMobileHostWithTheSameIdentity() {
@@ -275,12 +275,13 @@ class MobilePlaybackTest {
         assertEquals(
             listOf(
                 "POST" to "reading.snssdk.com",
+                "POST" to "reading.snssdk.com",
                 "GET" to "api5-normal-sinfonlineb.fqnovel.com",
                 "POST" to "api5-normal-sinfonlineb.fqnovel.com",
             ),
             requests.map { it.method to it.url.host },
         )
-        assertEquals(requests[0].url.encodedPath, requests[2].url.encodedPath)
+        assertEquals(requests[1].url.encodedPath, requests[3].url.encodedPath)
         for (parameter in listOf("iid", "device_id", "cdid")) {
             assertEquals(listOf(requests[0].url.queryParameter(parameter)), requests.map { it.url.queryParameter(parameter) }.distinct())
         }
@@ -303,7 +304,7 @@ class MobilePlaybackTest {
         assertTrue(error.suppressed.filterIsInstance<PlaybackDiagnosticException>().any {
             it.detail.startsWith("video-tab-no-compatible-source ") && it.detail.endsWith("alternate-model=b")
         })
-        assertEquals(listOf("POST", "GET", "POST"), requests.map { it.method })
+        assertEquals(listOf("POST", "POST", "GET", "POST"), requests.map { it.method })
     }
 
     @Test fun healthyModelAndUpstreamBackoffDoNotUseTab() {
@@ -314,7 +315,69 @@ class MobilePlaybackTest {
         assertThrows(PlaybackServiceBackoffException::class.java) {
             busy.streamLadderWithCompatibility("123")
         }
-        assertEquals(listOf("POST", "POST"), requests.map { it.method })
+        assertEquals(listOf("POST", "POST", "POST"), requests.map { it.method })
+    }
+
+    @Test fun videoModelCurrentIsPreferredAndKeepsHighDefinitionSource() {
+        var calls = 0
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            calls++
+            assertEquals("reading.snssdk.com", request.url.host)
+            assertEquals("/novel/player/video_model/v1/", request.url.encodedPath)
+            assertEquals("74532", request.url.queryParameter("version_code"))
+            val bytes = Buffer().apply { request.body!!.writeTo(this) }.readByteArray()
+            val body = JSONObject(GZIPInputStream(bytes.inputStream()).reader().readText())
+            assertEquals("123", body.getString("video_id"))
+            assertEquals(2, body.getJSONObject("biz_param").getInt("device_level"))
+            val model = JSONObject(
+                """{"video_list":[
+                    {"main_url":"https://example.org/hd","video_meta":{"definition":"1080p","codec_type":"h264","vwidth":1920,"vheight":1080},"encrypt_info":{"encrypt":false}},
+                    {"main_url":"https://example.org/sd","video_meta":{"definition":"720p","codec_type":"h264","vwidth":720,"vheight":1280},"encrypt_info":{"encrypt":false}}
+                ]}"""
+            )
+            val payload = JSONObject().put("code", 0)
+                .put("data", JSONObject().put("video_model", model)).toString()
+            Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(payload.toResponseBody()).build()
+        }.build()
+        val repository = ContentRepository(
+            http = client,
+            playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") },
+        )
+
+        val ladder = repository.streamLadderWithCompatibility("123")
+
+        assertEquals(1, calls)
+        assertEquals("https://example.org/hd", ladder.select(1080)!!.url)
+    }
+
+    @Test fun videoModelFailureFallsBackToPreload() {
+        val paths = mutableListOf<String>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val request = chain.request()
+            paths += request.url.encodedPath
+            val response = if (paths.size == 1) {
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(503).message("fixture")
+                    .body("".toResponseBody()).build()
+            } else {
+                Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                    .body(model().toResponseBody()).build()
+            }
+            response
+        }.build()
+        val repository = ContentRepository(
+            http = client,
+            playbackSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") },
+        )
+
+        val ladder = repository.streamLadderWithCompatibility("123")
+
+        assertEquals(
+            listOf("/novel/player/video_model/v1/", "/novel/player/multi_video_model/preload/v1"),
+            paths,
+        )
+        assertEquals("https://example.org/video", ladder.select(720)!!.url)
     }
 
     private fun repositoryWithModels(
