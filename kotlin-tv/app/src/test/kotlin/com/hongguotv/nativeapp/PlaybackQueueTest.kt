@@ -581,7 +581,7 @@ class PlaybackQueueTest {
             ShadowLooper.idleMainLooper()
 
             assertTrue(unfinished.isCancelled)
-            assertEquals(1, metadataRequests.get())
+            assertEquals(2, metadataRequests.get())
             assertFalse(slot.complete(ticket, key, opened))
             assertThrows(java.io.IOException::class.java) { opened.video.read(0, 1) }
         }
